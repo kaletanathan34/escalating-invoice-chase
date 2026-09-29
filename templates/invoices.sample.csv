@@ -1,0 +1,6 @@
+InvoiceID,ClientName,ClientEmail,Amount,Currency,DueDate,Status,LastStageSent,LastSentAt,Notes,FromName,ReplyTo
+INV-1001,Acme Design Co,client1@example.com,1200.00,USD,2026-09-29,Open,none,,Website redesign milestone 1,Jordan Lee,billing@yourstudio.example
+INV-1002,Bright Labs LLC,client2@example.com,450.00,USD,2026-09-26,Open,0,2026-09-26T14:05:00.000Z,Logo package — polite due-day sent,Jordan Lee,billing@yourstudio.example
+INV-1003,Northwind Media,client3@example.com,2800.00,USD,2026-09-20,Open,3,2026-09-23T09:12:00.000Z,Retainer Sep — firm chase sent,Jordan Lee,billing@yourstudio.example
+INV-1004,Cedar & Co,paid.client@example.com,900.00,USD,2026-09-15,Paid,7,2026-09-22T11:00:00.000Z,Paid — do not chase,Jordan Lee,billing@yourstudio.example
+INV-1005,Future Client Inc,upcoming@example.com,1500.00,USD,2026-10-05,Open,none,,Not due yet — no stage,Jordan Lee,billing@yourstudio.example

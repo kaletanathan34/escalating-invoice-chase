@@ -1,0 +1,10 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+credentials.json
+token.json
+node_modules/
+.n8n/
