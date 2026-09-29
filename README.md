@@ -4,6 +4,12 @@
 
 Built for freelancers and micro-agencies who are tired of chasing invoices by hand.
 
+## Buy / store
+
+**Live pack ($149):** [https://kaletana.gumroad.com/l/vnhyc](https://kaletana.gumroad.com/l/vnhyc)
+
+GitHub is the public scaffold and docs mirror. Buyers: get the pack on Gumroad, then follow Setup below.
+
 ---
 
 ## Who it's for
@@ -25,7 +31,7 @@ Built for freelancers and micro-agencies who are tired of chasing invoices by ha
 | `workflows/invoice-chase-unsubscribe-webhook.json` | Optional signed unsubscribe webhook → `Paused` |
 | `workflows/invoice-chase-send-error.json` | Error Workflow stub: on failure → best-effort `Paused` + Notes |
 | `templates/invoices.sample.csv` | Sheet column schema + sample rows (incl. Paid + Paused) |
-| `docs/GUMROAD_LISTING_DRAFT.md` | Draft Gumroad listing copy (~$149) — **DRAFT, not published** |
+| `docs/GUMROAD_LISTING_DRAFT.md` | Gumroad listing copy (live at $149) |
 | `docs/THREAT_NOTES.md` | Security review notes |
 | `scripts/scrub-credentials.sh` | Pre-commit / CI guard: fails if credential tokens sneak into the tree |
 | `.githooks/pre-commit` | Optional local hook that runs the scrub script |
@@ -277,11 +283,12 @@ See `docs/THREAT_NOTES.md` for the short security review checklist.
 
 ## License / sale
 
-Source scaffold is **MIT** (`LICENSE`). Intended as a paid Gumroad pack (~$149) for packaged docs + support positioning; this GitHub repo is the public scaffold / docs mirror. **Do not publish buyer OAuth secrets.** Listing draft: `docs/GUMROAD_LISTING_DRAFT.md` (DRAFT only).
+Source scaffold is **MIT** (`LICENSE`). Paid pack on Gumroad: **[https://kaletana.gumroad.com/l/vnhyc](https://kaletana.gumroad.com/l/vnhyc)** ($149). This GitHub repo is the public scaffold / docs mirror. **Do not publish buyer OAuth secrets.** Listing archive: `docs/GUMROAD_LISTING_DRAFT.md`.
 
 ---
 
 ## Changelog
 
+- **0.2.1** — Pin live Gumroad store URL in README.
 - **0.2.0** — STOP as product control (footers + reply-STOP + signed unsubscribe + Notes `\bSTOP\b` skip); header-injection hardening; concurrency=1; send-error revert + Error Workflow stub; saveData*=none; CI scrub; MIT LICENSE; Gumroad draft AR-not-collections.
 - **0.1.0** — Initial shippable scaffold: MVP stages 0 / 3 / 7, claim-before-send, workflow, sample CSV, Gumroad draft, threat notes, credential scrub hook.

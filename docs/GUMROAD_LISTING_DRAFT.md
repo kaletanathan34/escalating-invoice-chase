@@ -1,6 +1,6 @@
-# DRAFT — Gumroad listing (do not publish)
+# Gumroad listing (published)
 
-> **STATUS: DRAFT ONLY.** Not published. Copy below is for review before any Gumroad create/publish step.
+> **STATUS: LIVE** at [https://kaletana.gumroad.com/l/vnhyc](https://kaletana.gumroad.com/l/vnhyc) ($149). Archive of approved listing copy — keep in sync if the store page changes.
 
 ---
 
