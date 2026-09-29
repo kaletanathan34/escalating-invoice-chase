@@ -45,7 +45,7 @@ Built for freelancers and micro-agencies who are tired of chasing invoices by ha
 | Stages (MVP) | **0** (due day, polite) → **3** (day +3, firm) → **7** (day +7, final) |
 | Stop conditions | `Status = Paid` or `Paused`; Notes matching `\bSTOP\b`; never re-send same stage |
 | Idempotency | Keyed by `InvoiceID` + stage; claim-before-send + cooldown; workflow **concurrency=1** |
-| Send failure | Gmail error → revert claim (clear stage/timestamp) + Notes; Error Workflow stub may set `Paused` |
+| Send failure | Gmail error → Revert Claim (clear stage/timestamp + append timestamped error note); Error Workflow stub may set `Paused` |
 
 ---
 
@@ -122,14 +122,14 @@ n8n schedule triggers can overlap if a previous run is slow. **Double-send risk:
 2. Decide eligible stage (if any).
 3. **Write** `LastStageSent` = that stage and `LastSentAt` = now **before** calling Gmail (claim / lock).
 4. Send Gmail.
-5. On send failure, optionally revert claim or set `Status = Paused` + note in `Notes` (MVP: leave claim; operator re-opens carefully — documented in Threat Notes).
+5. On Gmail send failure, `onError` routes to **Revert Claim**, which clears `LastStageSent` / `LastSentAt` and appends a timestamped error note to `Notes` so the stage can retry.
 
 Also:
 
 - **Cooldown:** skip if `LastSentAt` is within the last **55 minutes** (prevents hammering even if claim is stale).
 - **Idempotency key:** `InvoiceID` + stage string; never send the same stage twice once claimed.
 - **Concurrency:** main workflow settings `concurrency: 1` to reduce claim TOCTOU from overlapping executions.
-- **Send failure:** Gmail node `onError` → **Revert Claim** (clears `LastStageSent` / `LastSentAt`, appends Notes) so the stage can retry. Pair `workflows/invoice-chase-send-error.json` as the Error Workflow for broader failures (best-effort `Status=Paused`).
+- **Send failure:** Gmail node `onError` → **Revert Claim** (clears `LastStageSent` / `LastSentAt`, appends a timestamped error note to `Notes`) so the stage can retry. Pair `workflows/invoice-chase-send-error.json` as the Error Workflow for broader failures (best-effort `Status=Paused`).
 
 ---
 
@@ -269,7 +269,7 @@ To enable GitHub Actions scrub on PRs, copy `docs/ci/scrub.yml` → `.github/wor
 
 12. **Header injection** — Build Email strips `\r`/`\n` from subject, FromName, ReplyTo, and sendTo; rejects non-single-email `ClientEmail` before Gmail.
 13. **Concurrency** — main chase `concurrency: 1` to limit overlapping claim races.
-14. **Send-error path** — revert claim on Gmail failure; Error Workflow stub may set `Paused` + Notes.
+14. **Send-error path** — Gmail failure routes to Revert Claim (clears the claim and appends a timestamped error note); the Error Workflow stub may set `Paused` for broader failures.
 
 See `docs/THREAT_NOTES.md` for the short security review checklist.
 

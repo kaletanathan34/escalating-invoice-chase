@@ -44,7 +44,7 @@ Buyers connect credentials inside **their** n8n instance. Repo exports use place
 
 - Risk: overlapping schedule executions both read the same `LastStageSent` (claim TOCTOU).
 - Mitigation: **claim-before-send** — write `LastStageSent` + `LastSentAt` **before** Gmail send; plus ~55 minute cooldown on `LastSentAt`; workflow **`concurrency: 1`**.
-- **Send failure:** Gmail `onError` → Revert Claim (clear `LastStageSent` / `LastSentAt` + Notes). Error Workflow stub `invoice-chase-send-error.json` may set `Status=Paused` on broader failures.
+- **Send failure:** Gmail `onError` → Revert Claim (clear `LastStageSent` / `LastSentAt` + append a timestamped error note to `Notes`). Error Workflow stub `invoice-chase-send-error.json` may set `Status=Paused` on broader failures.
 
 ## Execution logging / PII
 
@@ -77,7 +77,7 @@ Buyers connect credentials inside **their** n8n instance. Repo exports use place
 | M1 STOP | Reply-STOP + signed unsubscribe set `Paused`; Compute skips Paid/Paused **and** Notes `\bSTOP\b` |
 | M2 Header injection | Strip CR/LF + single-email validation in Build Email |
 | M3 Claim TOCTOU | `concurrency: 1` on main chase |
-| M4 Send error | Gmail error → Revert Claim; Error Workflow stub → Paused |
+| M4 Send error | Gmail error → Revert Claim with timestamped Notes append; Error Workflow stub → Paused |
 | M5 Error log retention | `saveDataErrorExecution: none` |
 
 ## Pack distribution
