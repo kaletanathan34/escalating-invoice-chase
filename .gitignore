@@ -6,5 +6,7 @@
 *.p12
 credentials.json
 token.json
+service-account*.json
+*-service-account.json
 node_modules/
 .n8n/

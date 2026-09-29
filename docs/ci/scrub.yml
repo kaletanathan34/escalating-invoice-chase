@@ -1,0 +1,14 @@
+name: Scrub credentials
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  scrub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run credential scrub
+        run: bash ./scripts/scrub-credentials.sh

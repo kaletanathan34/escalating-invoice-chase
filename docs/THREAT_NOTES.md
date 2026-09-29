@@ -29,24 +29,27 @@ Buyers connect credentials inside **their** n8n instance. Repo exports use place
 - Editor access can change `ClientEmail`, `Status`, amounts, and names → weaponized mail or silenced chase.
 - Prefer a dedicated Sheet (not a general ops workbook).
 
-## STOP / unsubscribe / Paid
+## STOP / unsubscribe / Paid (mandatory product control)
 
-- Clear purpose: invoice payment reminder (transactional B2B chase).
+- Clear purpose: invoice payment reminder (transactional B2B chase) — **not** collections or legal action.
 - Stage cap: **3** (`0`, `3`, `7`).
-- Honor `Status = Paid` and `Paused` immediately (no further sends).
-- Suggest documenting client opt-out → set `Paused` or note `STOP` in `Notes` and pause manually.
+- Honor `Status = Paid` and `Paused` immediately (no further sends). Main workflow **Compute Stage** skips both.
+- **STOP path (required):** client replies with word **STOP** → `workflows/invoice-chase-stop-reply.json` sets `Status = Paused` and appends `[timestamp] STOP received` to `Notes`. That cancels remaining stages because the chase skips Paused.
+- **Defense-in-depth:** Compute Stage also skips when `Notes` matches `\bSTOP\b` (even if Status is still Open). Prefer normalizing to `Paused` via the STOP workflows.
+- **Optional signed unsubscribe webhook:** `workflows/invoice-chase-unsubscribe-webhook.json` — `POST` with body `{ "invoiceId": "..." }` and header **`X-Chase-Secret`** must match n8n env `CHASE_UNSUBSCRIBE_SECRET`. Reject missing/wrong secret (401). Never commit the real secret.
+- Email footers on stages 0/3/7 tell the client: reply STOP to pause reminders for this invoice.
 - CAN-SPAM-oriented tips (business identity, reply path, no purchased lists) live in README.
 
 ## Double-send / cron overlap
 
-- Risk: overlapping schedule executions both read the same `LastStageSent`.
-- Mitigation: **claim-before-send** — write `LastStageSent` + `LastSentAt` **before** Gmail send; plus ~55 minute cooldown on `LastSentAt`.
-- Residual: failed send after claim may skip that stage until operator resets claim columns carefully.
+- Risk: overlapping schedule executions both read the same `LastStageSent` (claim TOCTOU).
+- Mitigation: **claim-before-send** — write `LastStageSent` + `LastSentAt` **before** Gmail send; plus ~55 minute cooldown on `LastSentAt`; workflow **`concurrency: 1`**.
+- **Send failure:** Gmail `onError` → Revert Claim (clear `LastStageSent` / `LastSentAt` + Notes). Error Workflow stub `invoice-chase-send-error.json` may set `Status=Paused` on broader failures.
 
 ## Execution logging / PII
 
 - Do not use Set nodes that dump full HTML bodies into items retained in execution history.
-- Production: disable “save successful executions” (or aggressive pruning) so client emails / amounts are not retained longer than needed.
+- Pack defaults: `saveDataSuccessExecution` and `saveDataErrorExecution` = **`none`** (no long retention). If temporarily enabled for debug, prune aggressively.
 
 ## Rate limits
 
@@ -57,9 +60,25 @@ Buyers connect credentials inside **their** n8n instance. Repo exports use place
 
 | Surface | Requirement |
 |---------|-------------|
-| HTTP / Webhook trigger | Shared-secret header auth; reject missing/invalid secret |
+| HTTP / Webhook trigger (unsubscribe) | Shared-secret header **`X-Chase-Secret`** must match env; reject missing/invalid secret; never commit real secret |
 | Stripe / Wave sync | **Read-only** API keys; never store PAN / full card numbers in Sheets |
 | HTML bodies | Escape/sanitize all Sheet-driven fields (implemented in Code node) |
+
+
+## Header injection (email)
+
+- Before Gmail: strip `\r` / `\n` from subject, FromName / senderName, ReplyTo, and sendTo.
+- Validate `ClientEmail` is a **single** email shape; refuse send otherwise.
+
+## Security findings fold-in (30662dd follow-up)
+
+| ID | Mitigation in pack |
+|----|--------------------|
+| M1 STOP | Reply-STOP + signed unsubscribe set `Paused`; Compute skips Paid/Paused **and** Notes `\bSTOP\b` |
+| M2 Header injection | Strip CR/LF + single-email validation in Build Email |
+| M3 Claim TOCTOU | `concurrency: 1` on main chase |
+| M4 Send error | Gmail error → Revert Claim; Error Workflow stub → Paused |
+| M5 Error log retention | `saveDataErrorExecution: none` |
 
 ## Pack distribution
 

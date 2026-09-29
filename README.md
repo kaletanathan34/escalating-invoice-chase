@@ -1,6 +1,6 @@
 # Escalating Invoice Chase (n8n + Google Sheets + Gmail)
 
-**Ship your AR reminders on autopilot.** A ready-to-import n8n workflow that sends escalating payment reminders at **Day 0 (due) / Day +3 / Day +7** relative to each invoice due date — and **stops the moment Status = Paid**.
+**Ship your AR reminders on autopilot.** A ready-to-import n8n workflow that sends escalating payment reminders at **Day 0 (due) / Day +3 / Day +7** relative to each invoice due date — and **stops when marked Paid, or when the client replies STOP** (sets Paused; remaining stages cancelled).
 
 Built for freelancers and micro-agencies who are tired of chasing invoices by hand.
 
@@ -20,12 +20,17 @@ Built for freelancers and micro-agencies who are tired of chasing invoices by ha
 
 | Path | Purpose |
 |------|---------|
-| `workflows/invoice-chase.json` | Importable n8n workflow (MVP) |
-| `templates/invoices.sample.csv` | Sheet column schema + sample rows |
+| `workflows/invoice-chase.json` | Main chase: stages 0 / +3 / +7 (MVP) |
+| `workflows/invoice-chase-stop-reply.json` | Reply-STOP handler → sets `Status=Paused` |
+| `workflows/invoice-chase-unsubscribe-webhook.json` | Optional signed unsubscribe webhook → `Paused` |
+| `workflows/invoice-chase-send-error.json` | Error Workflow stub: on failure → best-effort `Paused` + Notes |
+| `templates/invoices.sample.csv` | Sheet column schema + sample rows (incl. Paid + Paused) |
 | `docs/GUMROAD_LISTING_DRAFT.md` | Draft Gumroad listing copy (~$149) — **DRAFT, not published** |
 | `docs/THREAT_NOTES.md` | Security review notes |
-| `scripts/scrub-credentials.sh` | Pre-commit guard: fails if credential tokens sneak into the tree |
+| `scripts/scrub-credentials.sh` | Pre-commit / CI guard: fails if credential tokens sneak into the tree |
 | `.githooks/pre-commit` | Optional local hook that runs the scrub script |
+| `docs/ci/scrub.yml` | GitHub Actions scrub workflow (copy to `.github/workflows/scrub.yml` to enable CI) |
+| `LICENSE` | MIT |
 
 ---
 
@@ -38,8 +43,9 @@ Built for freelancers and micro-agencies who are tired of chasing invoices by ha
 | Delivery | Gmail via OAuth2 (`gmail.send` only) |
 | Trigger | Schedule (default: every hour) |
 | Stages (MVP) | **0** (due day, polite) → **3** (day +3, firm) → **7** (day +7, final) |
-| Stop conditions | `Status = Paid` or `Paused`; never re-send same stage |
-| Idempotency | Keyed by `InvoiceID` + stage; claim-before-send + cooldown |
+| Stop conditions | `Status = Paid` or `Paused`; Notes matching `\bSTOP\b`; never re-send same stage |
+| Idempotency | Keyed by `InvoiceID` + stage; claim-before-send + cooldown; workflow **concurrency=1** |
+| Send failure | Gmail error → revert claim (clear stage/timestamp) + Notes; Error Workflow stub may set `Paused` |
 
 ---
 
@@ -89,11 +95,22 @@ Rules:
 
 ## Stop-on-Paid + cooldown / idempotency
 
-### Stop-on-Paid / opt-out
+### Stop-on-Paid / STOP opt-out (mandatory product control)
 
-- If `Status = Paid` or `Status = Paused`, the row is skipped. No email.
+**STOP is a product control, not a nice-to-have.** Flipping a row to `Status = Paused` (or `Paid`) cancels any remaining Day 0 / +3 / +7 sends because the main workflow **Compute Stage** skips those statuses.
+
+| Path | What happens |
+|------|----------------|
+| Mark `Paid` | Settled — chase skips the row forever (until you reopen). |
+| Client replies **STOP** | Import `workflows/invoice-chase-stop-reply.json`. On STOP (word boundary, case-insensitive) in subject/body: parse `InvoiceID` if present, else match `ClientEmail` + `Open` → set **`Status = Paused`**, append `[timestamp] STOP received` to `Notes`. |
+| Signed unsubscribe webhook | Optional: `workflows/invoice-chase-unsubscribe-webhook.json`. `POST` `{ "invoiceId": "..." }` with header **`X-Chase-Secret`** matching n8n env `CHASE_UNSUBSCRIBE_SECRET` → `Status = Paused`. Wrong/missing secret → reject (401). **Never commit the real secret.** |
+
+All stage email footers tell the client: *Reply STOP to this email to pause reminders for this invoice.*
+
+**Defense-in-depth in Compute Stage:** even if Status is still `Open`, a `Notes` value matching word-boundary **STOP** (`\bSTOP\b`, case-insensitive) skips the row (same effect as Paused). Prefer the reply-STOP / webhook workflows that normalize to `Status=Paused`.
+
 - Mark invoices `Paid` as soon as payment clears (manual or future Wave/Stripe sync).
-- Optional: put `STOP` / unsubscribe preference in `Notes` or set `Paused` — honor it.
+- You can also set `Paused` manually in the Sheet for the same effect.
 
 ### Race on overlapping cron runs (claim-before-send)
 
@@ -111,6 +128,8 @@ Also:
 
 - **Cooldown:** skip if `LastSentAt` is within the last **55 minutes** (prevents hammering even if claim is stale).
 - **Idempotency key:** `InvoiceID` + stage string; never send the same stage twice once claimed.
+- **Concurrency:** main workflow settings `concurrency: 1` to reduce claim TOCTOU from overlapping executions.
+- **Send failure:** Gmail node `onError` → **Revert Claim** (clears `LastStageSent` / `LastSentAt`, appends Notes) so the stage can retry. Pair `workflows/invoice-chase-send-error.json` as the Error Workflow for broader failures (best-effort `Status=Paused`).
 
 ---
 
@@ -141,7 +160,7 @@ Schedule Trigger (hourly)
  (optional) Sheets: append send log / clear transient errors
 ```
 
-No public webhook in the MVP. If you add an HTTP/Webhook trigger later, **require a shared-secret header** and reject unauthenticated calls.
+**Optional webhook:** `workflows/invoice-chase-unsubscribe-webhook.json` requires header **`X-Chase-Secret`** (env `CHASE_UNSUBSCRIBE_SECRET`) and rejects unauthenticated calls. Main chase remains schedule-only.
 
 ---
 
@@ -152,7 +171,8 @@ Configure inside n8n — **never commit tokens**.
 | Credential (placeholder name in export) | Type | Scopes / notes |
 |-----------------------------------------|------|----------------|
 | `Google Sheets account` | Google Sheets OAuth2 | Spreadsheet access for the **one** chase sheet only where possible |
-| `Gmail account` | Gmail OAuth2 | **`https://www.googleapis.com/auth/gmail.send` ONLY** — do **not** grant `gmail.readonly`, `gmail.modify`, or full mailbox scopes |
+| `Gmail account` | Gmail OAuth2 | Main chase: **`https://www.googleapis.com/auth/gmail.send` ONLY**. STOP-reply workflow needs read/poll scope on a **separate** credential when possible |
+| `CHASE_UNSUBSCRIBE_SECRET` | n8n env var | Shared secret for `X-Chase-Secret` on the optional unsubscribe webhook — **never commit the real value** |
 
 Exact Gmail scope for this pack:
 
@@ -174,6 +194,8 @@ Or enable the sample hook:
 git config core.hooksPath .githooks
 ```
 
+To enable GitHub Actions scrub on PRs, copy `docs/ci/scrub.yml` → `.github/workflows/scrub.yml` (requires a token/app with the `workflow` scope to push that path).
+
 ---
 
 ## Setup steps
@@ -181,13 +203,16 @@ git config core.hooksPath .githooks
 1. **Copy the sheet template**  
    Upload `templates/invoices.sample.csv` to Google Drive → Open with Google Sheets. Keep your real client data private.
 
-2. **Import the workflow**  
-   n8n → Workflows → Import from File → `workflows/invoice-chase.json`.
+2. **Import workflows**  
+   n8n → Workflows → Import from File → `workflows/invoice-chase.json` (required).  
+   Also import `workflows/invoice-chase-stop-reply.json` (STOP replies), optionally `workflows/invoice-chase-unsubscribe-webhook.json`, and `workflows/invoice-chase-send-error.json` (pair as Error Workflow on the main chase).
 
-3. **Connect credentials**  
+3. **Connect credentials** (buyer checklist)  
    - Create Google Sheets OAuth2 credential; select your chase spreadsheet + sheet/tab.  
-   - Create Gmail OAuth2 credential with **`gmail.send` only**.  
-   - Map both to the placeholder credential names in the nodes (or re-select in each node).
+   - **Create Gmail OAuth2 credential with `gmail.send` ONLY** — do **not** tick readonly/modify/full mailbox for the *main chase* sender. Exact scope: `https://www.googleapis.com/auth/gmail.send`.  
+   - Map both to the placeholder credential names in the nodes (or re-select in each node).  
+   - STOP-reply workflow (optional separate Gmail credential): needs read/poll scope — keep it **separate** from the send-only chase credential when possible.  
+   - Optional webhook: set n8n env `CHASE_UNSUBSCRIBE_SECRET` (never commit it).
 
 4. **Set spreadsheet ID / sheet name**  
    Update the Google Sheets nodes with your Spreadsheet ID and sheet/tab name (e.g. `Invoices`).
@@ -199,7 +224,7 @@ git config core.hooksPath .githooks
    Enable the workflow. Prefer hourly over every-minute.
 
 7. **Production hygiene**  
-   In n8n workflow settings, **disable saving successful execution data** (or prune aggressively) so full email bodies / PII are not retained in execution logs.
+   Pack defaults: `saveDataSuccessExecution` and `saveDataErrorExecution` are **`none`** (no long retention of PII in execution logs). Keep it that way in production; if you temporarily enable error saves for debugging, prune aggressively.
 
 ### Loom / setup notes (placeholders)
 
@@ -208,6 +233,8 @@ git config core.hooksPath .githooks
 | Import workflow + credentials | `https://www.loom.com/share/PLACEHOLDER_IMPORT` |
 | Sheet template + column walkthrough | `https://www.loom.com/share/PLACEHOLDER_SHEET` |
 | First live send + claim columns | `https://www.loom.com/share/PLACEHOLDER_FIRST_SEND` |
+
+**Checklist (show in Loom):** buyer creates the **main chase** Gmail credential with **`gmail.send` only** — no mailbox read/modify scopes on that credential.
 
 ---
 
@@ -221,7 +248,7 @@ git config core.hooksPath .githooks
 **Self-host**
 
 - Same import path; ensure Google OAuth redirect URIs match your n8n base URL.
-- Keep n8n and its database off the public internet except the UI you protect; this pack does not need inbound webhooks for MVP.
+- Keep n8n and its database off the public internet except the UI you protect. Main chase is schedule-only; the optional unsubscribe webhook needs a reachable HTTPS URL plus `CHASE_UNSUBSCRIBE_SECRET`.
 - Back up workflows **without** credentials (n8n export with credentials stripped, plus `scripts/scrub-credentials.sh` on any git mirror).
 
 ---
@@ -233,12 +260,16 @@ git config core.hooksPath .githooks
 3. **Sheet = authz boundary** — share only with owner + n8n identity; edit access can change recipients and statuses and weaponize outbound mail.
 4. **Send as buyer's authenticated Gmail** — From is the OAuth account. Custom `FromName` is display-only. If you ever send via a custom domain / alias, align **SPF, DKIM, and DMARC** or risk spoofing / spam folders.
 5. **Claim-before-send** — write stage + timestamp before Gmail to reduce double-sends on cron overlap.
-6. **Don't log full bodies / PII** — avoid Set nodes that dump entire messages; disable save-successful-executions in production.
+6. **Don't log full bodies / PII** — avoid Set nodes that dump entire messages; pack sets `saveDataSuccessExecution` / `saveDataErrorExecution` to **`none`** (short/no retention).
 7. **No buyer credentials in this pack** — buyers connect their own Google accounts in their n8n instance.
-8. **CAN-SPAM / business email tips** — use a real business identity; include clear purpose (invoice reminder); honor Paid/opt-out (`Paused`); include your business name and reply path; don't buy lists; this is B2B transactional chase, not marketing blasts. Stage cap: 3 emails max per invoice.
+8. **CAN-SPAM / business email tips** — use a real business identity; include clear purpose (invoice reminder); honor Paid and **STOP → Paused** (reply-STOP workflow + optional signed webhook); include your business name and reply path; don't buy lists; this is B2B transactional chase, not marketing blasts or collections/legal action. Stage cap: 3 emails max per invoice.
 9. **HTML escaping** — Sheet-driven fields are escaped in the Code node before interpolation into HTML email bodies.
 10. **Future Stripe/Wave** — read-only API keys only; never store full PAN / card numbers in Sheets.
-11. **Future HTTP/Webhook triggers** — require shared-secret header auth; reject unauthenticated calls.
+11. **Unsubscribe webhook** — require `X-Chase-Secret` matching `CHASE_UNSUBSCRIBE_SECRET`; reject unauthenticated calls; never commit the real secret.
+
+12. **Header injection** — Build Email strips `\r`/`\n` from subject, FromName, ReplyTo, and sendTo; rejects non-single-email `ClientEmail` before Gmail.
+13. **Concurrency** — main chase `concurrency: 1` to limit overlapping claim races.
+14. **Send-error path** — revert claim on Gmail failure; Error Workflow stub may set `Paused` + Notes.
 
 See `docs/THREAT_NOTES.md` for the short security review checklist.
 
@@ -246,10 +277,11 @@ See `docs/THREAT_NOTES.md` for the short security review checklist.
 
 ## License / sale
 
-Intended as a paid Gumroad pack (~$149). This GitHub repo is the public scaffold / docs mirror. **Do not publish buyer OAuth secrets.** Listing draft: `docs/GUMROAD_LISTING_DRAFT.md` (DRAFT only).
+Source scaffold is **MIT** (`LICENSE`). Intended as a paid Gumroad pack (~$149) for packaged docs + support positioning; this GitHub repo is the public scaffold / docs mirror. **Do not publish buyer OAuth secrets.** Listing draft: `docs/GUMROAD_LISTING_DRAFT.md` (DRAFT only).
 
 ---
 
 ## Changelog
 
+- **0.2.0** — STOP as product control (footers + reply-STOP + signed unsubscribe + Notes `\bSTOP\b` skip); header-injection hardening; concurrency=1; send-error revert + Error Workflow stub; saveData*=none; CI scrub; MIT LICENSE; Gumroad draft AR-not-collections.
 - **0.1.0** — Initial shippable scaffold: MVP stages 0 / 3 / 7, claim-before-send, workflow, sample CSV, Gumroad draft, threat notes, credential scrub hook.

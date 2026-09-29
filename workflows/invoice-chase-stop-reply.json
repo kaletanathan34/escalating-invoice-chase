@@ -1,0 +1,339 @@
+{
+  "name": "Invoice Chase \u2014 STOP Reply Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyHour"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "in:inbox is:unread subject:(invoice OR INV- OR Reminder OR \"past due\" OR \"Final notice\")"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000001",
+      "name": "Gmail Trigger (replies)",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "PLACEHOLDER_GMAIL_CRED_ID",
+          "name": "Gmail account"
+        }
+      },
+      "notes": "Poll for inbound replies. Prefer gmail.readonly (or modify) on THIS workflow only \u2014 separate from main chase gmail.send credential if possible. No tokens in this export."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Detect STOP (case-insensitive word boundary) in subject/body.\n// Parse InvoiceID from subject/body when present; else fall back to ClientEmail + Open match downstream.\nfunction wordStop(text) {\n  return /\\bSTOP\\b/i.test(String(text || ''));\n}\n\nfunction extractInvoiceId(text) {\n  const s = String(text || '');\n  // Prefer explicit InvoiceID: INV-123 / invoice INV-123 / InvoiceID=INV-123\n  let m = /\\bInvoiceID\\s*[:=]\\s*([A-Za-z0-9._-]+)/i.exec(s);\n  if (m) return m[1];\n  m = /\\binvoice\\s+#?\\s*([A-Za-z0-9._-]+)/i.exec(s);\n  if (m) return m[1];\n  m = /\\b(INV-[A-Za-z0-9._-]+)\\b/i.exec(s);\n  if (m) return m[1];\n  return '';\n}\n\nconst out = [];\nfor (const item of items) {\n  const j = item.json;\n  const subject = j.subject || j.Subject || '';\n  const body = j.textPlain || j.text || j.snippet || j.body || '';\n  const html = j.textHtml || j.html || '';\n  const combined = [subject, body, html].join('\\n');\n  if (!wordStop(combined)) continue;\n\n  const from = String(j.from || j.From || j.sender || '').trim();\n  // Extract bare email from \"Name <email@x>\"\n  const em = /([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})/.exec(from);\n  const clientEmail = em ? em[1].toLowerCase() : from.toLowerCase();\n  const invoiceId = extractInvoiceId(combined);\n\n  out.push({\n    json: {\n      stopDetected: true,\n      InvoiceID: invoiceId,\n      ClientEmail: clientEmail,\n      matchedBy: invoiceId ? 'invoiceId' : 'clientEmail',\n      receivedAt: new Date().toISOString(),\n      noteLine: '', // filled after match\n    }\n  });\n}\nreturn out;\n"
+      },
+      "id": "b2000000-0000-4000-8000-000000000002",
+      "name": "Detect STOP + Parse InvoiceID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "s1",
+              "leftValue": "={{ $json.stopDetected }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000003",
+      "name": "STOP Detected?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Invoices",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000004",
+      "name": "Read Invoices",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        780,
+        200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Match STOP reply to a sheet row: InvoiceID if present, else ClientEmail + Status=Open.\n// Sets Status=Paused and appends Notes with timestamp \"STOP received\".\n// Main chase Compute Stage skips Paused \u2192 remaining 0/+3/+7 sends are cancelled.\nconst stopItem = $('Detect STOP + Parse InvoiceID').first().json;\nconst wantId = String(stopItem.InvoiceID || '').trim();\nconst wantEmail = String(stopItem.ClientEmail || '').trim().toLowerCase();\nconst stamp = stopItem.receivedAt || new Date().toISOString();\nconst noteAppend = `[${stamp}] STOP received`;\n\nconst matches = [];\nfor (const item of items) {\n  const row = item.json;\n  const id = String(row.InvoiceID || '').trim();\n  const email = String(row.ClientEmail || '').trim().toLowerCase();\n  const status = String(row.Status || '').trim();\n\n  let hit = false;\n  if (wantId && id.toLowerCase() === wantId.toLowerCase()) {\n    hit = true;\n  } else if (!wantId && wantEmail && email === wantEmail && status === 'Open') {\n    hit = true;\n  }\n  if (!hit) continue;\n\n  const prevNotes = String(row.Notes || '').trim();\n  const notes = prevNotes ? `${prevNotes} | ${noteAppend}` : noteAppend;\n\n  matches.push({\n    json: {\n      InvoiceID: id,\n      Status: 'Paused',\n      Notes: notes,\n      matchedBy: wantId ? 'invoiceId' : 'clientEmail+Open',\n    }\n  });\n}\n\n// If multiple Open rows share one email and no InvoiceID, pause all matched Open rows\n// (safer opt-out than guessing a single invoice).\nreturn matches;\n"
+      },
+      "id": "b2000000-0000-4000-8000-000000000005",
+      "name": "Match Row + Build Pause",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "m1",
+              "leftValue": "={{ $json.InvoiceID }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000006",
+      "name": "Has Match?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Invoices",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "InvoiceID": "={{ $json.InvoiceID }}",
+            "Status": "={{ $json.Status }}",
+            "Notes": "={{ $json.Notes }}"
+          },
+          "matchingColumns": [
+            "InvoiceID"
+          ],
+          "schema": [
+            {
+              "id": "InvoiceID",
+              "displayName": "InvoiceID",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000007",
+      "name": "Set Status=Paused",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1560,
+        120
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## STOP reply \u2192 Status=Paused (product control)\n\n1. Gmail Trigger polls inbound replies (importable; credential **placeholders only**).\n2. If subject/body contains **STOP** (word boundary, case-insensitive), parse **InvoiceID** from subject/body when present; otherwise match by **ClientEmail + Status=Open**.\n3. Google Sheets: set **Status = Paused**, append `[timestamp] STOP received` to **Notes**.\n\n**Why this cancels remaining stages:** the main workflow `Compute Stage` skips `Paid` and `Paused`, so flipping to Paused stops any remaining 0 / +3 / +7 sends.\n\nReplace `REPLACE_WITH_SPREADSHEET_ID`. Attach Sheets + Gmail credentials by name \u2014 **no tokens in this JSON**.\n\nNote: reading replies needs a broader Gmail scope than `gmail.send` (e.g. readonly). Prefer a **separate** credential from the chase sender.",
+        "height": 420,
+        "width": 480
+      },
+      "id": "b2000000-0000-4000-8000-000000000008",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        40
+      ]
+    }
+  ],
+  "connections": {
+    "Gmail Trigger (replies)": {
+      "main": [
+        [
+          {
+            "node": "Detect STOP + Parse InvoiceID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect STOP + Parse InvoiceID": {
+      "main": [
+        [
+          {
+            "node": "STOP Detected?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "STOP Detected?": {
+      "main": [
+        [
+          {
+            "node": "Read Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Read Invoices": {
+      "main": [
+        [
+          {
+            "node": "Match Row + Build Pause",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Row + Build Pause": {
+      "main": [
+        [
+          {
+            "node": "Has Match?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Match?": {
+      "main": [
+        [
+          {
+            "node": "Set Status=Paused",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "00000000-0000-4000-8000-0000000000b1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "scaffold-escalating-invoice-chase"
+  },
+  "tags": [
+    {
+      "name": "ar"
+    },
+    {
+      "name": "stop"
+    },
+    {
+      "name": "opt-out"
+    }
+  ],
+  "pinData": {},
+  "id": "scaffold-invoice-chase-stop-reply-001"
+}

@@ -1,0 +1,336 @@
+{
+  "name": "Invoice Chase \u2014 Signed Unsubscribe Webhook",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "invoice-chase-unsubscribe",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000001",
+      "name": "Webhook POST",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "scaffold-invoice-chase-unsub",
+      "notes": "Optional signed unsubscribe. Require header X-Chase-Secret. Never commit the real secret."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shared-secret gate: header X-Chase-Secret must match env/placeholder.\n// Set CHASE_UNSUBSCRIBE_SECRET in n8n env (or replace PLACEHOLDER below in a private fork \u2014 never commit real secret).\nconst EXPECTED = String($env.CHASE_UNSUBSCRIBE_SECRET || 'REPLACE_WITH_CHASE_UNSUBSCRIBE_SECRET').trim();\n\nconst item = $input.first().json;\nconst headers = item.headers || {};\n// Header names may be lower-cased by n8n/proxies\nconst got = String(\n  headers['x-chase-secret'] ||\n  headers['X-Chase-Secret'] ||\n  headers['X-CHASE-SECRET'] ||\n  ''\n).trim();\n\nconst body = item.body || item;\nconst invoiceId = String(\n  (body && body.invoiceId) ||\n  (body && body.InvoiceID) ||\n  item.invoiceId ||\n  ''\n).trim();\n\nconst authorized = Boolean(EXPECTED) &&\n  EXPECTED !== 'REPLACE_WITH_CHASE_UNSUBSCRIBE_SECRET' &&\n  got.length > 0 &&\n  got === EXPECTED;\n\nif (!authorized) {\n  return [{\n    json: {\n      ok: false,\n      httpStatus: 401,\n      error: 'unauthorized',\n      InvoiceID: '',\n    }\n  }];\n}\n\nif (!invoiceId) {\n  return [{\n    json: {\n      ok: false,\n      httpStatus: 400,\n      error: 'missing_invoiceId',\n      InvoiceID: '',\n    }\n  }];\n}\n\nconst stamp = new Date().toISOString();\nreturn [{\n  json: {\n    ok: true,\n    httpStatus: 200,\n    InvoiceID: invoiceId,\n    Status: 'Paused',\n    noteAppend: `[${stamp}] STOP received via unsubscribe webhook`,\n  }\n}];\n"
+      },
+      "id": "c3000000-0000-4000-8000-000000000002",
+      "name": "Check X-Chase-Secret",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "a1",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000003",
+      "name": "Authorized?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Invoices",
+          "mode": "name"
+        },
+        "options": {
+          "lookupColumn": "InvoiceID",
+          "lookupValue": "={{ $('Check X-Chase-Secret').item.json.InvoiceID }}"
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000004",
+      "name": "Lookup Invoice",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        780,
+        200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "If lookup options differ in your n8n version, filter rows in the next Code node instead."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Append note and force Status=Paused for matching InvoiceID.\nconst auth = $('Check X-Chase-Secret').first().json;\nconst wantId = String(auth.InvoiceID || '').trim().toLowerCase();\nconst noteAppend = auth.noteAppend;\n\nconst out = [];\nfor (const item of items) {\n  const row = item.json;\n  const id = String(row.InvoiceID || '').trim();\n  if (id.toLowerCase() !== wantId) continue;\n  const prevNotes = String(row.Notes || '').trim();\n  const notes = prevNotes ? `${prevNotes} | ${noteAppend}` : noteAppend;\n  out.push({\n    json: {\n      InvoiceID: id,\n      Status: 'Paused',\n      Notes: notes,\n    }\n  });\n}\n\nif (out.length === 0) {\n  return [{\n    json: {\n      InvoiceID: auth.InvoiceID,\n      Status: 'Paused',\n      Notes: noteAppend,\n      _notFound: true,\n    }\n  }];\n}\nreturn out;\n"
+      },
+      "id": "c3000000-0000-4000-8000-000000000005",
+      "name": "Build Pause Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Invoices",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "InvoiceID": "={{ $json.InvoiceID }}",
+            "Status": "Paused",
+            "Notes": "={{ $json.Notes }}"
+          },
+          "matchingColumns": [
+            "InvoiceID"
+          ],
+          "schema": [
+            {
+              "id": "InvoiceID",
+              "displayName": "InvoiceID",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000006",
+      "name": "Set Status=Paused",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1300,
+        200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, invoiceId: $json.InvoiceID, status: 'Paused' }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000007",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1560,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error || 'unauthorized' }) }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus || 401 }}"
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000008",
+      "name": "Respond Reject",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        780,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Optional signed unsubscribe webhook\n\n**POST** body: `{ \"invoiceId\": \"INV-1001\" }`\n\n**Auth:** header `X-Chase-Secret` must equal n8n env `CHASE_UNSUBSCRIBE_SECRET` (placeholder `REPLACE_WITH_CHASE_UNSUBSCRIBE_SECRET` in Code node fallback). **Reject** missing/wrong secret (401).\n\nOn success: set Sheet **Status = Paused** (+ Notes timestamp). Main chase skips Paused \u2192 no further stages.\n\nDocument the secret in README / your private ops notes \u2014 **never commit a real secret** in this JSON.\n\nReplace `REPLACE_WITH_SPREADSHEET_ID`; attach **Google Sheets account** credential by name only.",
+        "height": 400,
+        "width": 460
+      },
+      "id": "c3000000-0000-4000-8000-000000000009",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        40
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook POST": {
+      "main": [
+        [
+          {
+            "node": "Check X-Chase-Secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check X-Chase-Secret": {
+      "main": [
+        [
+          {
+            "node": "Authorized?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authorized?": {
+      "main": [
+        [
+          {
+            "node": "Lookup Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Reject",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Invoice": {
+      "main": [
+        [
+          {
+            "node": "Build Pause Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Pause Update": {
+      "main": [
+        [
+          {
+            "node": "Set Status=Paused",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Status=Paused": {
+      "main": [
+        [
+          {
+            "node": "Respond 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "00000000-0000-4000-8000-0000000000c1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "scaffold-escalating-invoice-chase"
+  },
+  "tags": [
+    {
+      "name": "ar"
+    },
+    {
+      "name": "unsubscribe"
+    },
+    {
+      "name": "webhook"
+    }
+  ],
+  "pinData": {},
+  "id": "scaffold-invoice-chase-unsub-001"
+}

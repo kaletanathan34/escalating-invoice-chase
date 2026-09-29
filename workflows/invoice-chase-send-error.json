@@ -1,0 +1,272 @@
+{
+  "name": "Invoice Chase \u2014 Send Error Handler (stub)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "d4000000-0000-4000-8000-000000000001",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "Pair as Error Workflow on the main chase. Fires on unhandled workflow errors (complement to Gmail onError \u2192 Revert Claim branch)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract InvoiceID from error execution payload when present; set Status=Paused + Notes.\n// Prefer the in-workflow Revert Claim branch for Gmail node failures; this stub covers broader failures.\nconst root = $input.first().json || {};\nconst exec = root.execution || root;\nconst last = (exec.lastNodeExecuted || exec.lastNode || '');\nlet inv = '';\nconst tryObjs = [root, exec, root.workflowData, root.error, root.node];\nfor (const o of tryObjs) {\n  if (!o || typeof o !== 'object') continue;\n  if (o.InvoiceID) { inv = String(o.InvoiceID); break; }\n  if (o.invoiceId) { inv = String(o.invoiceId); break; }\n}\n// Best-effort dig into execution data items\nconst data = exec.data || root.data;\nif (!inv && data && data.main) {\n  try {\n    const flat = JSON.stringify(data);\n    const m = /\"InvoiceID\"\\s*:\\s*\"([^\"]+)\"/.exec(flat);\n    if (m) inv = m[1];\n  } catch (e) { /* ignore */ }\n}\nconst stamp = new Date().toISOString();\nconst errMsg = String((root.error && (root.error.message || root.error)) || exec.error || 'workflow error').slice(0, 200);\nif (!inv) {\n  // Nothing to update \u2014 surface for operator logs without writing Sheet\n  return [{ json: { skipped: true, reason: 'no_InvoiceID', lastNode: last, errMsg, at: stamp } }];\n}\nconst noteAppend = `[${stamp}] SEND_ERROR \u2014 Status=Paused (error workflow): ${errMsg}`;\nreturn [{\n  json: {\n    InvoiceID: inv,\n    Status: 'Paused',\n    Notes: noteAppend,\n    lastNode: last,\n  }\n}];\n"
+      },
+      "id": "d4000000-0000-4000-8000-000000000002",
+      "name": "Extract Invoice + Build Pause",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "e1",
+              "leftValue": "={{ $json.InvoiceID }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d4000000-0000-4000-8000-000000000003",
+      "name": "Has InvoiceID?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Invoices",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "d4000000-0000-4000-8000-000000000004",
+      "name": "Read Invoices",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        780,
+        200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Append error note onto existing Notes for matching InvoiceID.\nconst pause = $('Extract Invoice + Build Pause').first().json;\nconst want = String(pause.InvoiceID || '').trim().toLowerCase();\nconst out = [];\nfor (const item of items) {\n  const row = item.json;\n  const id = String(row.InvoiceID || '').trim();\n  if (id.toLowerCase() !== want) continue;\n  const prev = String(row.Notes || '').trim();\n  const notes = prev ? `${prev} | ${pause.Notes}` : pause.Notes;\n  out.push({ json: { InvoiceID: id, Status: 'Paused', Notes: notes } });\n}\nif (!out.length) {\n  out.push({ json: { InvoiceID: pause.InvoiceID, Status: 'Paused', Notes: pause.Notes } });\n}\nreturn out;\n"
+      },
+      "id": "d4000000-0000-4000-8000-000000000005",
+      "name": "Merge Notes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Invoices",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "InvoiceID": "={{ $json.InvoiceID }}",
+            "Status": "Paused",
+            "Notes": "={{ $json.Notes }}"
+          },
+          "matchingColumns": [
+            "InvoiceID"
+          ],
+          "schema": [
+            {
+              "id": "InvoiceID",
+              "displayName": "InvoiceID",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d4000000-0000-4000-8000-000000000006",
+      "name": "Set Status=Paused",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1300,
+        200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER_SHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Send-error stub (M4)\n\nPair this workflow as the **Error Workflow** on `invoice-chase.json` (settings.errorWorkflow / UI).\n\n- **In-workflow path (preferred for Gmail node failures):** Gmail `onError: continueErrorOutput` \u2192 Revert Claim (clears `LastStageSent` / `LastSentAt`, appends Notes) so the stage can retry.\n- **This Error Trigger stub:** on broader unhandled failures, best-effort set **Status=Paused** + Notes `SEND_ERROR` so the chase does not keep claiming blindly.\n\nNo secrets in this JSON. Replace spreadsheet ID; attach Sheets credential by name.",
+        "height": 360,
+        "width": 460
+      },
+      "id": "d4000000-0000-4000-8000-000000000007",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        40
+      ]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Invoice + Build Pause",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Invoice + Build Pause": {
+      "main": [
+        [
+          {
+            "node": "Has InvoiceID?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has InvoiceID?": {
+      "main": [
+        [
+          {
+            "node": "Read Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Read Invoices": {
+      "main": [
+        [
+          {
+            "node": "Merge Notes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Notes": {
+      "main": [
+        [
+          {
+            "node": "Set Status=Paused",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "00000000-0000-4000-8000-0000000000d1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "scaffold-escalating-invoice-chase"
+  },
+  "tags": [
+    {
+      "name": "ar"
+    },
+    {
+      "name": "error-handler"
+    }
+  ],
+  "pinData": {},
+  "id": "scaffold-invoice-chase-send-error-001"
+}
